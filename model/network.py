@@ -36,14 +36,6 @@ class HashEmbedder(nn.Module):
        
         current_bound = self.bounding_box_scale
 
-        # 1. 检查是否有越界点
-        out_of_bound_mask = (x.abs() > current_bound)
-        if out_of_bound_mask.any():
-            print(f"\n[WARNING] 数据越界检测!")
-            print(f"  设定范围: [-{current_bound}, {current_bound}]")
-            print(f"  实际范围: Min {x.min().item():.4f}, Max {x.max().item():.4f}")
-            print(f"  越界点数量: {out_of_bound_mask.sum().item()} / {x.numel()}")
-
         x_norm = (x + self.bounding_box_scale) / (2 * self.bounding_box_scale)
         x_norm = torch.clamp(x_norm, 0.0, 1.0)
 
@@ -78,10 +70,8 @@ class HashEmbedder(nn.Module):
                              (corner_coords[:, 2] * primes[2])
                 hash_indices = xor_result % (2 ** self.log2_hashmap_size)
 
-                # 查表
                 corner_embed = self.embeddings[i](hash_indices)  # [Batch, level_dim]
 
-                # 计算插值权重
                 w = torch.ones(x.shape[0], 1, device=x.device)
                 for k in range(3):  # x, y, z dimensions
                     if corner_offset[k] == 0:
