@@ -13,95 +13,75 @@ class MySoftplus(nn.Softplus):
 class HashEmbedder(nn.Module):
     def __init__(self, bounding_box_scale=2.0, num_levels=16, level_dim=2, base_resolution=16, log2_hashmap_size=21):
         super().__init__()
-        self.bounding_box_scale = bounding_box_scale  # ¼ÙÉèÈËÌåÊý¾ÝÔÚ [-scale, scale] Ö®¼ä
+        self.bounding_box_scale = bounding_box_scale 
         self.num_levels = num_levels
         self.level_dim = level_dim
         self.log2_hashmap_size = log2_hashmap_size
         self.base_resolution = base_resolution
         self.output_dim = num_levels * level_dim
 
-        # ³õÊ¼»¯¹þÏ£±í
+
         self.embeddings = nn.ModuleList([
             nn.Embedding(2 ** self.log2_hashmap_size, self.level_dim)
             for _ in range(num_levels)
         ])
 
-        # ¼ÆËãÃ¿Ò»²ãµÄ·Ö±æÂÊÔö³¤
-        # Ä¿±êÊÇ´Ó base_resolution Ôö³¤µ½ max_resolution (Í¨³£ÊÇ 2048 »ò 4096)
         max_resolution = 2048
         self.b = np.exp((np.log(max_resolution) - np.log(base_resolution)) / (num_levels - 1))
 
-        # ³õÊ¼»¯²ÎÊý (Ê¹ÓÃ¾ùÔÈ·Ö²¼µÄÐ¡Ëæ»úÊý)
         for i in range(num_levels):
             nn.init.uniform_(self.embeddings[i].weight, a=-1e-4, b=1e-4)
 
     def forward(self, x):
-        # --- ÐÂÔö¼à¿Ø´úÂë Start ---
-        # ÕâÀïµÄ 2.0 ±ØÐëºÍÄã init ÀïµÄ bounding_box_scale Ò»ÖÂ
+       
         current_bound = self.bounding_box_scale
 
-        # 1. ¼ì²éÊÇ·ñÓÐÔ½½çµã
+        # 1. æ£€æŸ¥æ˜¯å¦æœ‰è¶Šç•Œç‚¹
         out_of_bound_mask = (x.abs() > current_bound)
         if out_of_bound_mask.any():
-            print(f"\n[WARNING] Êý¾ÝÔ½½ç¼ì²â!")
-            print(f"  Éè¶¨·¶Î§: [-{current_bound}, {current_bound}]")
-            print(f"  Êµ¼Ê·¶Î§: Min {x.min().item():.4f}, Max {x.max().item():.4f}")
-            print(f"  Ô½½çµãÊýÁ¿: {out_of_bound_mask.sum().item()} / {x.numel()}")
+            print(f"\n[WARNING] æ•°æ®è¶Šç•Œæ£€æµ‹!")
+            print(f"  è®¾å®šèŒƒå›´: [-{current_bound}, {current_bound}]")
+            print(f"  å®žé™…èŒƒå›´: Min {x.min().item():.4f}, Max {x.max().item():.4f}")
+            print(f"  è¶Šç•Œç‚¹æ•°é‡: {out_of_bound_mask.sum().item()} / {x.numel()}")
 
-            # ¿ÉÑ¡£ºÈç¹ûÄãÏë¿´µ½Ô½½ç·Ç³£ÑÏÖØÖ±½Ó±¨´í£¬¿ÉÒÔÈ¡ÏûÏÂÃæÕâÐÐµÄ×¢ÊÍ
-            # raise ValueError("Input coordinates exceed bounding box scale!")
-        # --- ÐÂÔö¼à¿Ø´úÂë End ---
-
-
-        # x shape: [Batch, 3]
-        # Hash Encoding ÐèÒªÊäÈëÔÚ [0, 1] Ö®¼ä
-        # ¼ÙÉèÊäÈë x ÔÚ [-bound, bound] Ö®¼ä£¬ÎÒÃÇ½«Æä¹éÒ»»¯
-
-        # 1. ¹éÒ»»¯µ½ [0, 1]
         x_norm = (x + self.bounding_box_scale) / (2 * self.bounding_box_scale)
-        # ÏÞÖÆ·¶Î§£¬·ÀÖ¹Ô½½çµ¼ÖÂ¹þÏ£Ë÷Òý´íÎó
         x_norm = torch.clamp(x_norm, 0.0, 1.0)
 
         features = []
 
-        # ³£ÓÃµÄ´óÖÊÊýÓÃÓÚ¿Õ¼ä¹þÏ£
         primes = [73856093, 19349663, 83492791]
 
         for i in range(self.num_levels):
             resolution = int(np.floor(self.base_resolution * (self.b ** i)))
 
-            # ½« [0, 1] ×ø±êËõ·Åµ½Íø¸ñ·Ö±æÂÊ
             scaled_x = x_norm * resolution
 
-            # »ñÈ¡×óÏÂ½ÇÕûÊý×ø±ê (floor)
             x0 = torch.floor(scaled_x).long()
-            # »ñÈ¡ÓÒÉÏ½ÇÕûÊý×ø±ê (ceil)
+
             x1 = x0 + 1
 
-            # ¼ÆËãµ±Ç°Íø¸ñÄÚµÄÏà¶Ô×ø±ê (ÓÃÓÚ²åÖµÈ¨ÖØ)
             weights = scaled_x - x0.float()  # [Batch, 3]
 
-            # ¶¨Òå 8 ¸ö½ÇµÄÆ«ÒÆÁ¿
             offsets = torch.tensor([[0, 0, 0], [0, 0, 1], [0, 1, 0], [0, 1, 1],
                                     [1, 0, 0], [1, 0, 1], [1, 1, 0], [1, 1, 1]], device=x.device)
 
             current_level_feature = 0
 
-            # ÊÖ¶¯½øÐÐÈýÏßÐÔ²åÖµ (Trilinear Interpolation)
+            # æ‰‹åŠ¨è¿›è¡Œä¸‰çº¿æ€§æ’å€¼ (Trilinear Interpolation)
             for j in range(8):
                 corner_offset = offsets[j]
                 corner_coords = x0 + corner_offset
 
-                # ¿Õ¼ä¹þÏ£º¯Êý: (x*p1 ^ y*p2 ^ z*p3) % size
+                # ç©ºé—´å“ˆå¸Œå‡½æ•°: (x*p1 ^ y*p2 ^ z*p3) % size
                 xor_result = (corner_coords[:, 0] * primes[0]) ^ \
                              (corner_coords[:, 1] * primes[1]) ^ \
                              (corner_coords[:, 2] * primes[2])
                 hash_indices = xor_result % (2 ** self.log2_hashmap_size)
 
-                # ²é±í
+                # æŸ¥è¡¨
                 corner_embed = self.embeddings[i](hash_indices)  # [Batch, level_dim]
 
-                # ¼ÆËã²åÖµÈ¨ÖØ
+                # è®¡ç®—æ’å€¼æƒé‡
                 w = torch.ones(x.shape[0], 1, device=x.device)
                 for k in range(3):  # x, y, z dimensions
                     if corner_offset[k] == 0:
@@ -113,7 +93,7 @@ class HashEmbedder(nn.Module):
 
             features.append(current_level_feature)
 
-        # Æ´½ÓËùÓÐ²ã¼¶µÄÌØÕ÷
+        # æ‹¼æŽ¥æ‰€æœ‰å±‚çº§çš„ç‰¹å¾
         return torch.cat(features, dim=-1)
 
     
@@ -283,16 +263,16 @@ class ImplicitNetwork(nn.Module):
         self.embed_fn = None
 
 
-        # bounding_box_scale=2.0 ÒâÎ¶×ÅËü¿ÉÒÔ´¦Àí [-2, 2] ·¶Î§ÄÚµÄ×ø±ê (¸²¸Ç´ó¶àÊýÈËÌå³ß´ç)
+        # bounding_box_scale=2.0 æ„å‘³ç€å®ƒå¯ä»¥å¤„ç† [-2, 2] èŒƒå›´å†…çš„åæ ‡ (è¦†ç›–å¤§å¤šæ•°äººä½“å°ºå¯¸)
         if use_hash_encoding:
-            # Ê¹ÓÃ Hash Encoding
+            # ä½¿ç”¨ Hash Encoding
             print("Injecting Hash Encoding into ImplicitNetwork...")
-            # bounding_box_scale=2.0 ÒâÎ¶×ÅËü¿ÉÒÔ´¦Àí [-2, 2] ·¶Î§ÄÚµÄ×ø±ê (¸²¸Ç´ó¶àÊýÈËÌå³ß´ç)
+            # bounding_box_scale=2.0 æ„å‘³ç€å®ƒå¯ä»¥å¤„ç† [-2, 2] èŒƒå›´å†…çš„åæ ‡ (è¦†ç›–å¤§å¤šæ•°äººä½“å°ºå¯¸)
             self.embed_fn = HashEmbedder(bounding_box_scale=1200.0, num_levels=16, level_dim=4)
             input_ch = self.embed_fn.output_dim
             dims[0] = input_ch
         elif multires > 0:
-            # Ô­ÓÐµÄ Positional Encoding Âß¼­
+            # åŽŸæœ‰çš„ Positional Encoding é€»è¾‘
             embed_fn, input_ch = get_embedder(multires)
             self.embed_fn = embed_fn
             dims[0] = input_ch
