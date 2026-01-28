@@ -1,5 +1,3 @@
- 
-# This file contains the loss functions used in the training of the model.
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,53 +10,18 @@ from utils.tensors import cond_create, eik_loss
 from hit.utils.slice_extractor import SliceLevelSet
 
 
-
-
-class FocalLoss(nn.Module):
-    def __init__(self, alpha=None, gamma=2.0, reduction='mean'):
-
-        super(FocalLoss, self).__init__()
-        self.gamma = gamma
-        self.alpha = alpha
-        if isinstance(alpha, (float, int)): self.alpha = torch.Tensor([alpha, 1-alpha])
-        if isinstance(alpha, list): self.alpha = torch.Tensor(alpha)
-        self.reduction = reduction
-
-    def forward(self, inputs, targets):
-        if inputs.ndim > 2:
-            # Flatten inputs and targets for processing
-            c = inputs.shape[1]
-            inputs = inputs.permute(0, *range(2, inputs.ndim), 1).reshape(-1, c)
-            targets = targets.view(-1)
-
-        if self.alpha is not None:
-            if self.alpha.device != inputs.device:
-                self.alpha = self.alpha.to(inputs.device)
-
-        ce_loss = F.cross_entropy(inputs, targets, reduction='none', weight=self.alpha)
-        pt = torch.exp(-ce_loss)
-        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
-
-        if self.reduction == 'mean':
-            return focal_loss.mean()
-        elif self.reduction == 'sum':
-            return focal_loss.sum()
-        else:
-            return focal_loss
-
-
 def compute_occupancy_loss(hit_pl, batch, pred_occ):
     w_list = []
-    n_points = batch['mri_occ'].shape[0] * batch['mri_occ'].shape[1] 
+    n_points = batch['mri_occ'].shape[0] * batch['mri_occ'].shape[1] # = B*T
     for ci in range(len(hit_pl.train_cfg['mri_labels'])):
-        wi = 1 - (torch.sum(batch['mri_occ'] == float(ci)) / n_points)
+        wi = 1-(torch.sum(batch['mri_occ'] == float(ci))/n_points)
         w_list.append(wi)
-
+        
     weight = torch.hstack(w_list)
 
     if len(hit_pl.train_cfg.mri_labels) == 1:
         if hit_pl.data_cfg.synthetic:
-            target_occ_val = 1  # The synthetic data loader returns 0 or 1 depending if the point is inside or outside the SMPL mesh
+            target_occ_val = 1 # The synthetic data loader returns 0 or 1 depending if the point is inside or outside the SMPL mesh
         else:
             if hit_pl.train_cfg.mri_labels == ['LT']:
                 target_occ_val = 1
@@ -66,17 +29,11 @@ def compute_occupancy_loss(hit_pl, batch, pred_occ):
                 target_occ_val = 2
             else:
                 raise ValueError(f"Unknown tissue type {hit_pl.train_cfg.mri_labels}")
-        occ_loss = F.binary_cross_entropy_with_logits(pred_occ, (batch['mri_occ'] == target_occ_val).float())
+        occ_loss = F.binary_cross_entropy_with_logits(pred_occ, (batch['mri_occ']==target_occ_val).float())
     else:
-
-        manual_weights = [1.0, 1.0, 2.0, 3.0]
-        focal_criterion = FocalLoss(alpha=manual_weights, gamma=2.0, reduction='mean')
-
-        occ_loss = focal_criterion(
-            inputs=pred_occ.reshape(-1, pred_occ.shape[-1]),  # (BxT, 4)
-            targets=batch['mri_occ'].long().reshape(-1)  # (BxT)
-        )
-
+        occ_loss = F.cross_entropy(input = pred_occ.reshape(-1, pred_occ.shape[-1]),  # (BxT, 4)
+                            target = batch['mri_occ'].long().reshape(-1),  # (BxT)
+                            weight = weight)
         
     occ_loss = hit_pl.train_cfg.lambda_occ * occ_loss
     hit_pl.log("train/loss_occ", occ_loss)
@@ -592,46 +549,3 @@ def compute_canonicalization_loss(hit_pl, batch, batch_idx, smpl_output, cond, s
         hit_pl.log(f"{step}/canonicalization_loss", loss_canonicalization)
        
         return loss_canonicalization
-
-
-
-def compute_total_variation_loss(hit_pl, batch, pred_occ):
-
-    mri_points = batch['mri_points']
-    
-    B = pred_occ.shape[0]
-    tv_loss = 0
-    
-    for b in range(B):
-        points_b = mri_points[b]
-        pred_b = pred_occ[b]
-        
-        distances = torch.cdist(points_b, points_b)
-        
-        # 尝试不同的阈值
-        threshold = 0.015  # 从0.02降低到0.015，更严格的邻近定义
-        neighbors_mask = (distances < threshold) & (distances > 0)
-        
-        if neighbors_mask.sum() == 0:
-            continue
-            
-        neighbor_pairs = torch.nonzero(neighbors_mask, as_tuple=False)
-        
-        if neighbor_pairs.shape[0] == 0:
-            continue
-            
-        if len(hit_pl.train_cfg.mri_labels) > 1:
-            pred_probs = F.softmax(pred_b, dim=-1)
-        else:
-            pred_probs = torch.sigmoid(pred_b)
-            
-        point1_preds = pred_probs[neighbor_pairs[:, 0]]
-        point2_preds = pred_probs[neighbor_pairs[:, 1]]
-        
-        tv_diff = torch.abs(point1_preds - point2_preds).mean()
-        tv_loss += tv_diff
-    
-    tv_loss = tv_loss / B if B > 0 else tv_loss
-    tv_loss = hit_pl.train_cfg.lambda_tv * tv_loss
-    hit_pl.log("train/tv_loss", tv_loss)
-    return tv_loss
